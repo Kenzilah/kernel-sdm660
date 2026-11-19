@@ -30,8 +30,15 @@ jobs:
 
       - name: Integrasi SukiSU Ultra
         run: |
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s nongki
-          grep -rn "config KPM" drivers/ KernelSU/ 2>/dev/null || echo "Info: definisi 'config KPM' tidak ditemukan pada source SukiSU ini."
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s
+          grep -rn "config KPM" drivers/ KernelSU/ 2>/dev/null || true
+
+      - name: Fix compiler-clang.h
+        run: |
+          cat -n include/linux/compiler-clang.h
+          if grep -q "#ifdef CONFIG_LTO_CLANG" include/linux/compiler-clang.h; then
+            echo "#endif" >> include/linux/compiler-clang.h
+          fi
 
       - name: Siapkan defconfig (KSU + KPM + KALLSYMS)
         run: |
