@@ -1,0 +1,28 @@
+name: Cek Source Deagle
+on: workflow_dispatch
+jobs:
+  cek:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cek source
+        run: |
+          set +e
+          git clone --filter=blob:none --no-checkout -b deagle https://github.com/hairoes/kernel-sdm660 src
+          cd src
+          echo "=== 1. Tag ==="
+          git tag | tail -20
+          echo "=== 2. Commit sekitar 28 Feb 2021 ==="
+          git log --since='2021-02-24' --until='2021-03-03' --format='%h %ad %s' --date=iso | head -40
+          echo "=== 3. Commit terpilih ==="
+          C=$(git rev-list -1 --before='2021-02-28T02:15:00Z' deagle)
+          git log -1 --format='%h %ad %s' --date=iso $C
+          git checkout -q $C
+          echo "=== 4. Defconfig ==="
+          ls arch/arm64/configs | grep -i -E "whyred|deagle|sdm660|wayne|tulip"
+          echo "=== 5. Versi kernel ==="
+          head -4 Makefile
+          echo "=== 6. Jejak KernelSU/hook ==="
+          grep -rIl "ksu_handle\|CONFIG_KSU" fs kernel security drivers/input 2>/dev/null | head
+          ls drivers | grep -i ksu || echo "tidak ada driver KSU"
+          echo "=== 7. KPROBES dan KALLSYMS ==="
+          grep -n -E "KPROBES|KALLSYMS" arch/arm64/configs/whyred_defconfig
