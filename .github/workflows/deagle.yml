@@ -24,7 +24,6 @@ jobs:
           git checkout -q $DEAGLE_COMMIT
           git log -1 --format='%h %ad %s' --date=iso
           ls arch/arm64/configs | grep -i deagle_whyred
-          if [ -f oc.patch ] && git apply --check oc.patch 2>/dev/null; then git apply oc.patch; echo "oc.patch diterapkan"; else echo "oc.patch dilewati"; fi
       - name: Integrasi KernelSU
         run: |
           cd $HOME/src
@@ -95,13 +94,42 @@ jobs:
           wr(p, s); print('OK', p)
           PY
           git diff --stat
+      - name: Perbaiki overlayfs 4.4
+        run: |
+          cd $HOME/src
+          python3 - << 'PY'
+          p = 'fs/overlayfs/inode.c'
+          s = open(p, encoding='utf-8', errors='surrogateescape').read()
+          L = s.split('\n')
+          print('--- baris 130-160 sebelum diubah ---')
+          print('\n'.join(L[129:160]))
+          fixed = 0
+          i = 0
+          while i < len(L):
+              if L[i].strip() == 'ovl_revert_creds(old_cred);':
+                  a = i
+                  while a > 0 and not L[a].startswith('{'):
+                      a -= 1
+                  b = i
+                  while b < len(L) - 1 and not L[b].startswith('}'):
+                      b += 1
+                  body = '\n'.join(L[a:b + 1])
+                  if body.count('old_cred') == 1:
+                      print('hapus baris', i + 1)
+                      del L[i]
+                      fixed += 1
+                      continue
+              i += 1
+          open(p, 'w', encoding='utf-8', errors='surrogateescape').write('\n'.join(L))
+          print('jumlah diperbaiki:', fixed)
+          PY
       - name: Config KSU
         run: |
           cd $HOME/src
           sed -i '/CONFIG_OVERLAY_FS/d' arch/arm64/configs/$DEFCONFIG
           cat >> arch/arm64/configs/$DEFCONFIG << 'EOF'
+          CONFIG_OVERLAY_FS=y
           CONFIG_KSU=y
-          # CONFIG_OVERLAY_FS is not set
           EOF
       - name: Build
         run: |
