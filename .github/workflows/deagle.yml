@@ -17,6 +17,12 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev cpio curl git python3 gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
       - name: Get Proton Clang 13
         run: git clone --depth=1 https://github.com/kdrag0n/proton-clang $HOME/proton-clang
+      - name: Perbaiki ld.gold
+        run: |
+          sudo mkdir -p /root/build/install/aarch64-linux-gnu/lib /root/build/install/arm-linux-gnueabi/lib
+          sudo chmod a+x /root
+          sudo chmod -R a+rx /root/build
+          ls -ld /root /root/build/install/aarch64-linux-gnu/lib
       - name: Ambil source Deagle V13
         run: |
           git clone --filter=blob:none --no-checkout -b deagle https://github.com/hairoes/kernel-sdm660 $HOME/src
@@ -140,7 +146,7 @@ jobs:
           make $ARGS $DEFCONFIG
           grep -E "CONFIG_KSU|CONFIG_OVERLAY_FS|KALLSYMS" out/.config
           grep -q "CONFIG_KSU=y" out/.config || { echo "!!! KSU TIDAK AKTIF"; exit 1; }
-          make -j$(nproc) $ARGS
+          make -j$(nproc) $ARGS || { echo "=== ERROR PERTAMA ==="; make $ARGS 2>&1 | grep -E "error|Error|\*\*\*" | head -20; exit 1; }
           echo "=== cek driver masuk ke kernel ==="
           ls -la out/drivers/kernelsu/*.o | head
           strings out/arch/arm64/boot/Image | grep -c -i ksu
