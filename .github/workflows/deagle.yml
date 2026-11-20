@@ -98,9 +98,10 @@ jobs:
       - name: Config KSU
         run: |
           cd $HOME/src
+          sed -i '/CONFIG_OVERLAY_FS/d' arch/arm64/configs/$DEFCONFIG
           cat >> arch/arm64/configs/$DEFCONFIG << 'EOF'
           CONFIG_KSU=y
-          CONFIG_OVERLAY_FS=y
+          # CONFIG_OVERLAY_FS is not set
           EOF
       - name: Build
         run: |
