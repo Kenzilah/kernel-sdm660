@@ -1,0 +1,149 @@
+name: Build Deagle KSU
+on: workflow_dispatch
+env:
+  DEAGLE_COMMIT: 7645382c45b
+  DEFCONFIG: deagle_whyred_defconfig
+  KSU_SETUP: https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh
+  KSU_REF: v0.9.5
+  KBUILD_BUILD_USER: pei
+  KBUILD_BUILD_HOST: Fnz_09
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev cpio curl git python3 gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+      - name: Get Proton Clang 13
+        run: git clone --depth=1 https://github.com/kdrag0n/proton-clang $HOME/proton-clang
+      - name: Ambil source Deagle V13
+        run: |
+          git clone --filter=blob:none --no-checkout -b deagle https://github.com/hairoes/kernel-sdm660 $HOME/src
+          cd $HOME/src
+          git checkout -q $DEAGLE_COMMIT
+          git log -1 --format='%h %ad %s' --date=iso
+          ls arch/arm64/configs | grep -i deagle_whyred
+          if [ -f oc.patch ] && git apply --check oc.patch 2>/dev/null; then git apply oc.patch; echo "oc.patch diterapkan"; else echo "oc.patch dilewati"; fi
+      - name: Integrasi KernelSU
+        run: |
+          cd $HOME/src
+          curl -LSs "$KSU_SETUP" | bash -s $KSU_REF
+          ls -l drivers/kernelsu
+          head -20 KernelSU/kernel/Kconfig
+      - name: Tambah hook manual ke source
+        run: |
+          cd $HOME/src
+          python3 - << 'PY'
+          import re, sys
+          def rd(p): return open(p, encoding='utf-8', errors='surrogateescape').read()
+          def wr(p, s): open(p, 'w', encoding='utf-8', errors='surrogateescape').write(s)
+          def need(x, msg):
+              if not x:
+                  print('GAGAL:', msg); sys.exit(1)
+              return x
+
+          # fs/exec.c
+          p = 'fs/exec.c'; s = rd(p)
+          start = None
+          for m in re.finditer(r'^static int do_execveat_common\(', s, re.M):
+              seg = s[m.end(): m.end() + 300]
+              b = seg.find('{'); sc = seg.find(';')
+              if b != -1 and (sc == -1 or b < sc):
+                  start, bodyopen = m.start(), m.end() + b + 1
+                  break
+          need(start is not None, 'exec.c do_execveat_common')
+          m2 = need(re.compile(r'\n\tint retval;\n').search(s, bodyopen), 'exec.c int retval')
+          hook = ('#ifdef CONFIG_KSU\n\tif (unlikely(ksu_execveat_hook))\n'
+                  '\t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n'
+                  '\telse\n\t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);\n#endif\n')
+          decl = ('#ifdef CONFIG_KSU\nextern bool ksu_execveat_hook __read_mostly;\n'
+                  'extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,\n\t\t\tvoid *envp, int *flags);\n'
+                  'extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,\n\t\t\t\t void *argv, void *envp, int *flags);\n#endif\n\n')
+          s = s[:m2.end()] + hook + s[m2.end():]
+          s = s[:start] + decl + s[start:]
+          wr(p, s); print('OK', p)
+
+          # fs/open.c
+          p = 'fs/open.c'; s = rd(p)
+          m = need(re.search(r'^SYSCALL_DEFINE3\(faccessat, int, dfd, const char __user \*, filename, int, mode\)\n\{', s, re.M), 'open.c faccessat')
+          m2 = need(re.compile(r'\n\tif \(mode & ~S_IRWXO\)').search(s, m.end()), 'open.c if mode')
+          hook = '#ifdef CONFIG_KSU\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n'
+          decl = ('#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\n\t\t\t\t int *mode, int *flags);\n#endif\n\n')
+          s = s[:m2.start() + 1] + hook + s[m2.start() + 1:]
+          s = s[:m.start()] + decl + s[m.start():]
+          wr(p, s); print('OK', p)
+
+          # fs/read_write.c
+          p = 'fs/read_write.c'; s = rd(p)
+          m = need(re.search(r'^ssize_t vfs_read\(struct file \*file, char __user \*buf, size_t count, loff_t \*pos\)\n\{\n\tssize_t ret;\n', s, re.M), 'read_write.c vfs_read')
+          hook = '#ifdef CONFIG_KSU\n\tif (unlikely(ksu_vfs_read_hook))\n\t\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif\n'
+          decl = ('#ifdef CONFIG_KSU\nextern bool ksu_vfs_read_hook __read_mostly;\n'
+                  'extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,\n\t\t\tsize_t *count_ptr, loff_t **pos);\n#endif\n\n')
+          s = s[:m.end()] + hook + s[m.end():]
+          s = s[:m.start()] + decl + s[m.start():]
+          wr(p, s); print('OK', p)
+
+          # fs/stat.c
+          p = 'fs/stat.c'; s = rd(p)
+          m = need(re.search(r'^int vfs_fstatat\(int dfd, const char __user \*filename, struct kstat \*stat,\s*int flag\)\s*\{', s, re.M), 'stat.c vfs_fstatat')
+          m2 = need(re.compile(r'\tunsigned int lookup_flags = 0;\n').search(s, m.end()), 'stat.c lookup_flags')
+          hook = '#ifdef CONFIG_KSU\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif\n'
+          decl = '#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif\n\n'
+          s = s[:m2.end()] + hook + s[m2.end():]
+          s = s[:m.start()] + decl + s[m.start():]
+          wr(p, s); print('OK', p)
+          PY
+          git diff --stat
+      - name: Config KSU
+        run: |
+          cd $HOME/src
+          cat >> arch/arm64/configs/$DEFCONFIG << 'EOF'
+          CONFIG_KSU=y
+          CONFIG_OVERLAY_FS=y
+          EOF
+      - name: Build
+        run: |
+          cd $HOME/src
+          PC=$HOME/proton-clang/bin
+          export PATH="$PATH:$PC"
+          ARGS="O=out ARCH=arm64 CC=$PC/clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- AR=$PC/llvm-ar NM=$PC/llvm-nm OBJCOPY=$PC/llvm-objcopy OBJDUMP=$PC/llvm-objdump STRIP=$PC/llvm-strip HOSTCC=gcc HOSTCXX=g++"
+          make $ARGS $DEFCONFIG
+          grep -E "CONFIG_KSU|CONFIG_OVERLAY_FS|KALLSYMS" out/.config
+          grep -q "CONFIG_KSU=y" out/.config || { echo "!!! KSU TIDAK AKTIF"; exit 1; }
+          make -j$(nproc) $ARGS
+          echo "=== cek driver masuk ke kernel ==="
+          ls -la out/drivers/kernelsu/*.o | head
+          strings out/arch/arm64/boot/Image | grep -c -i ksu
+      - name: Buat zip AnyKernel3
+        run: |
+          cd $HOME/src
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
+          rm -rf AnyKernel3/.git AnyKernel3/ramdisk AnyKernel3/modules AnyKernel3/patch
+          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          cat > AnyKernel3/anykernel.sh << 'EOF'
+          ### AnyKernel3 Ramdisk Mod Script
+          properties() { '
+          kernel.string=Deagle V13 + KernelSU
+          do.devicecheck=0
+          do.modules=0
+          do.systemless=0
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=whyred
+          supported.versions=
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; }
+          BLOCK=/dev/block/bootdevice/by-name/boot;
+          IS_SLOT_DEVICE=0;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+          . tools/ak3-core.sh;
+          split_boot;
+          flash_boot;
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Deagle-V13-KSU-AnyKernel3
+          path: /home/runner/src/AnyKernel3/
